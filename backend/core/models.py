@@ -93,3 +93,5 @@ class AuditModel(models.Model):
 
     class Meta:
         abstract = True
+
+
