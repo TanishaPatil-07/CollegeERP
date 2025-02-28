@@ -5,12 +5,33 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.utils import timezone
-from .models import CustomUser
+import logging  # Add this import
+
+logger = logging.getLogger(__name__)  # Add this line
+
+from .models import (
+    CustomUser, COUNTRY, STATE, CITY, 
+    CURRENCY, LANGUAGE, DESIGNATION, CATEGORY,
+    UNIVERSITY, INSTITUTE, DEPARTMENT, PROGRAM  # Add these imports
+)
 from rest_framework.decorators import api_view
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
+from .serializers import (
+    CountrySerializer, StateSerializer, CitySerializer,
+    CurrencySerializer, LanguageSerializer, DesignationSerializer,
+    CategorySerializer, UniversitySerializer, InstituteSerializer, DepartmentSerializer, ProgramSerializer # Add these imports
+)
+from rest_framework import viewsets
+from rest_framework.permissions import IsAuthenticated
+from django.views.decorators.csrf import ensure_csrf_cookie
+from django.utils.decorators import method_decorator
+from rest_framework_simplejwt.settings import api_settings
+from rest_framework.permissions import AllowAny
 
 class LoginView(APIView):
+    permission_classes = [AllowAny]  # Allow unauthenticated access
+    
     def post(self, request):
         print("==== Login Request ====")
         print(f"Request Data: {request.data}")
@@ -117,7 +138,10 @@ class LoginView(APIView):
                 'message': 'Invalid USER_ID'
             }, status=status.HTTP_404_NOT_FOUND)
 
+@method_decorator(ensure_csrf_cookie, name='dispatch')
 class SendOTPView(APIView):
+    permission_classes = [AllowAny]  # Allow unauthenticated access
+    
     def post(self, request):
         user_id = request.data.get('user_id')
         if not user_id:
@@ -134,11 +158,15 @@ class SendOTPView(APIView):
                     'status': 'error',
                     'message': 'Account is not active'
                 }, status=status.HTTP_403_FORBIDDEN)
-
-            if user.is_account_locked():
+ 
+            # Check account lock status and get detailed message
+            is_locked, lock_message = user.is_account_locked()
+            if is_locked:
                 return Response({
                     'status': 'error',
-                    'message': 'Account is locked. Please try again later.'
+                    'message': lock_message,
+                    'locked': True,
+                    'lockTime': user.LOCK_EXPIRY.isoformat() if user.LOCK_EXPIRY else None
                 }, status=status.HTTP_403_FORBIDDEN)
 
             otp = user.generate_otp()
@@ -181,6 +209,8 @@ class SendOTPView(APIView):
             }, status=status.HTTP_404_NOT_FOUND)
 
 class VerifyOTPView(APIView):
+    permission_classes = [AllowAny]  # Allow unauthenticated access
+    
     def post(self, request):
         user_id = request.data.get('user_id')
         otp = request.data.get('otp')
@@ -199,9 +229,18 @@ class VerifyOTPView(APIView):
                 # Update login info
                 user.update_login_info(request.META.get('REMOTE_ADDR'))
                 
+                # Generate tokens manually
+                refresh = RefreshToken()
+                refresh[api_settings.USER_ID_CLAIM] = user.USER_ID
+                refresh['user_id'] = user.USER_ID  # Add custom claims
+                refresh['username'] = user.USERNAME
+                refresh['is_superuser'] = user.IS_SUPERUSER
+                
                 return Response({
                     'status': 'success',
                     'message': message,
+                    'token': str(refresh.access_token),
+                    'refresh': str(refresh),
                     'user': {
                         'user_id': user.USER_ID,
                         'username': user.USERNAME,
@@ -227,6 +266,12 @@ class VerifyOTPView(APIView):
                 'status': 'error',
                 'message': 'Invalid user'
             }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            print(f"Token generation error: {str(e)}")
+            return Response({
+                'status': 'error',
+                'message': 'An error occurred during authentication'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class RequestPasswordResetView(APIView):
     def post(self, request):
@@ -277,6 +322,7 @@ class RequestPasswordResetView(APIView):
                 user.save()
                 return Response({
                     'status': 'error',
+
                     'message': 'Failed to send OTP email'
                 }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
                 
@@ -350,3 +396,264 @@ class ResetPasswordView(APIView):
                 'status': 'error',
                 'message': 'User not found'
             }, status=status.HTTP_404_NOT_FOUND)
+
+class MasterTableListView(APIView):
+    def get(self, request):
+        master_tables = [
+            {"name": "country", "display_name": "Country", "endpoint": "http://localhost:8000/api/master/countries/"},
+            {"name": "state", "display_name": "State", "endpoint": "http://localhost:8000/api/master/states/"},
+            {"name": "city", "display_name": "City", "endpoint": "http://localhost:8000/api/master/cities/"},
+            {"name": "currency", "display_name": "Currency", "endpoint": "http://localhost:8000/api/master/currencies/"},
+            {"name": "language", "display_name": "Language", "endpoint": "http://localhost:8000/api/master/languages/"},
+            {"name": "designation", "display_name": "Designation", "endpoint": "http://localhost:8000/api/master/designations/"},
+            {"name": "department", "display_name": "Department", "endpoint": "http://localhost:8000/api/master/departments/"},
+            {"name": "category", "display_name": "Category", "endpoint": "http://localhost:8000/api/master/categories/"}
+        ]
+        return Response(master_tables)
+
+class BaseModelViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+
+    def get_username_from_request(self):
+        """Get username from multiple possible sources"""
+        try:
+            # Try Authorization header first
+            auth_header = self.request.headers.get('Authorization', '')
+            if (auth_header and auth_header.startswith('Username ')):
+                username = auth_header.split(' ')[1]
+                logger.debug(f"Username from Auth header: {username}")
+                return username
+
+            # Try X-Username header next
+            username = self.request.headers.get('X-Username')
+            if username:
+                logger.debug(f"Username from X-Username header: {username}")
+                return username
+
+            # Try getting from user object
+            if hasattr(self.request.user, 'USERNAME') and self.request.user.USERNAME:
+                logger.debug(f"Username from user object: {self.request.user.USERNAME}")
+                return self.request.user.USERNAME
+
+            # Fallback
+            logger.warning("No username found, using SYSTEM")
+            return 'SYSTEM'
+        except Exception as e:
+            logger.error(f"Error getting username: {str(e)}")
+            return 'SYSTEM'
+
+    def perform_create(self, serializer):
+        username = self.get_username_from_request()
+        logger.debug(f"Create by user: {username}")
+        serializer.save(
+            CREATED_BY=username,
+            UPDATED_BY=username
+        )
+
+    def perform_update(self, serializer):
+        username = self.get_username_from_request()
+        logger.debug(f"Update by user: {username}")
+        serializer.save(UPDATED_BY=username)
+
+    def perform_destroy(self, instance):
+        username = self.get_username_from_request()
+        logger.debug(f"Performing soft delete by user: {username}")
+        
+        instance.IS_DELETED = True
+        instance.DELETED_AT = timezone.now()
+        instance.DELETED_BY = username
+        instance.save()
+        
+        logger.info(f"Record {instance.pk} soft deleted by {username}")
+
+class CountryViewSet(BaseModelViewSet):
+    queryset = COUNTRY.objects.all()
+    serializer_class = CountrySerializer
+
+    def get_queryset(self):
+        return self.queryset.filter(IS_DELETED=False)
+
+    def list(self, request, *args, **kwargs):
+        countries = self.queryset.filter(IS_ACTIVE=True, IS_DELETED=False)
+        serializer = self.get_serializer(countries, many=True)
+        return Response(serializer.data)
+
+class StateViewSet(BaseModelViewSet):
+    queryset = STATE.objects.all()
+    serializer_class = StateSerializer
+
+    def get_queryset(self):
+        return self.queryset.filter(IS_DELETED=False)
+
+    def list(self, request, *args, **kwargs):
+        states = self.queryset.filter(IS_ACTIVE=True, IS_DELETED=False)
+        serializer = self.get_serializer(states, many=True)
+        return Response(serializer.data)
+
+class CityViewSet(BaseModelViewSet):
+    queryset = CITY.objects.all()
+    serializer_class = CitySerializer
+
+    def get_queryset(self):
+        # Only return non-deleted records
+        return self.queryset.filter(IS_DELETED=False)
+
+    def list(self, request, *args, **kwargs):
+        # Only list active and non-deleted records
+        cities = self.queryset.filter(IS_ACTIVE=True, IS_DELETED=False)
+        serializer = self.get_serializer(cities, many=True)
+        return Response(serializer.data)
+
+class CurrencyViewSet(BaseModelViewSet):
+    queryset = CURRENCY.objects.all()
+    serializer_class = CurrencySerializer
+
+    def get_queryset(self):
+        return self.queryset.filter(IS_DELETED=False)
+
+    def list(self, request, *args, **kwargs):
+        currencies = self.queryset.filter(IS_ACTIVE=True, IS_DELETED=False)
+        serializer = self.get_serializer(currencies, many=True)
+        return Response(serializer.data)
+
+class LanguageViewSet(BaseModelViewSet):
+    queryset = LANGUAGE.objects.all()
+    serializer_class = LanguageSerializer
+
+    def get_queryset(self):
+        return self.queryset.filter(IS_DELETED=False)
+
+    def list(self, request, *args, **kwargs):
+        languages = self.queryset.filter(IS_ACTIVE=True, IS_DELETED=False)
+        serializer = self.get_serializer(languages, many=True)
+        return Response(serializer.data)
+
+class DesignationViewSet(BaseModelViewSet):
+    queryset = DESIGNATION.objects.all()
+    serializer_class = DesignationSerializer
+
+    def get_queryset(self):
+        return self.queryset.filter(IS_DELETED=False)
+
+    def list(self, request, *args, **kwargs):
+        designations = self.queryset.filter(IS_ACTIVE=True, IS_DELETED=False)
+        serializer = self.get_serializer(designations, many=True)
+        return Response(serializer.data)
+
+class CategoryViewSet(BaseModelViewSet):
+    queryset = CATEGORY.objects.all()
+    serializer_class = CategorySerializer
+
+    def get_queryset(self):
+        return self.queryset.filter(IS_DELETED=False)
+
+    def create(self, request, *args, **kwargs):
+        try:
+            # Validate required fields
+            required_fields = {
+                'NAME': 'Category name',
+                'CODE': 'Category code',
+                'RESERVATION_PERCENTAGE': 'Reservation percentage'
+            }
+            
+            missing_fields = [
+                field_name for field, field_name in required_fields.items() 
+                if field not in request.data
+            ]
+            
+            if missing_fields:
+                return Response({
+                    'error': 'Missing required fields',
+                    'message': f"Please provide: {', '.join(missing_fields)}",
+                    'fields': missing_fields
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Create category with proper error handling
+            serializer = self.get_serializer(data=request.data)
+            
+            try:
+                serializer.is_valid(raise_exception=True)
+            except serializers.ValidationError as e:
+                # Get the first validation error
+                error_detail = e.detail
+                if isinstance(error_detail, dict) and 'error' in error_detail:
+                    # If it's our custom formatted error, return as is
+                    return Response(error_detail, status=status.HTTP_400_BAD_REQUEST)
+                else:
+                    # Format other validation errors
+                    field = list(error_detail.keys())[0]
+                    return Response({
+                        'error': 'Validation error',
+                        'message': str(error_detail[field][0]),
+                        'field': field
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+            self.perform_create(serializer)
+            
+            return Response({
+                'status': 'success',
+                'message': 'Category created successfully',
+                'data': serializer.data
+            }, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            return Response({
+                'error': 'Server error',
+                'message': 'An unexpected error occurred while creating the category',
+                'detail': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def list(self, request, *args, **kwargs):
+        categories = self.queryset.filter(IS_ACTIVE=True, IS_DELETED=False)
+        serializer = self.get_serializer(categories, many=True)
+        return Response(serializer.data)
+
+class UniversityViewSet(BaseModelViewSet):
+    queryset = UNIVERSITY.objects.all()
+    serializer_class = UniversitySerializer
+
+    def list(self, request, *args, **kwargs):
+        universities = self.queryset.filter(IS_ACTIVE=True)
+        serializer = self.get_serializer(universities, many=True)
+        return Response(serializer.data)
+
+class InstituteViewSet(BaseModelViewSet):
+    queryset = INSTITUTE.objects.all()
+    serializer_class = InstituteSerializer
+
+    def list(self, request, *args, **kwargs):
+        institutes = self.queryset.filter(IS_ACTIVE=True)
+        serializer = self.get_serializer(institutes, many=True)
+        return Response(serializer.data)
+   
+class DepartmentViewSet(BaseModelViewSet):
+    queryset = DEPARTMENT.objects.all()
+    serializer_class = DepartmentSerializer
+
+    def get_queryset(self):
+        return self.queryset.filter(IS_DELETED=False)
+
+    def list(self, request, *args, **kwargs):
+        departments = self.queryset.filter(IS_ACTIVE=True, IS_DELETED=False)
+        serializer = self.get_serializer(departments, many=True)
+        return Response(serializer.data)
+    
+class ProgramListCreateView(BaseModelViewSet):
+    queryset = PROGRAM.objects.all()
+    serializer_class = ProgramSerializer
+    permission_classes = [AllowAny]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(
+                {"message": "Program created successfully!", "data": serializer.data},
+                status=status.HTTP_201_CREATED,
+            )
+        
+        print("Serializer Errors:", serializer.errors)  # 🔥 Print errors to console
+        return Response(
+            {"error": serializer.errors}, 
+            status=status.HTTP_400_BAD_REQUEST
+        )

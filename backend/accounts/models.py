@@ -8,19 +8,7 @@ from django.contrib.auth.models import AbstractUser, BaseUserManager
 import secrets
 from datetime import datetime, timedelta
 
-# Add BaseHistoryModel
-class BaseHistoryModel(models.Model):
-    HISTORY_ID = models.AutoField(primary_key=True, db_column='HISTORY_ID')
-    ACTION = models.CharField(max_length=10, db_column='ACTION')  # INSERT/UPDATE/DELETE
-    ACTION_BY = models.ForeignKey('CustomUser', on_delete=models.PROTECT, db_column='ACTION_BY')
-    ACTION_AT = models.DateTimeField(auto_now_add=True, db_column='ACTION_AT')
-    OLD_DATA = models.JSONField(null=True, blank=True, db_column='OLD_DATA')
-    NEW_DATA = models.JSONField(null=True, blank=True, db_column='NEW_DATA')
-
-    class Meta:
-        abstract = True
-
-class CustomUserManager(models.Manager):
+class CustomUserManager(BaseUserManager):
     def get_by_natural_key(self, username):
         """
         Enable authentication via USERNAME field
@@ -52,37 +40,26 @@ class CustomUserManager(models.Manager):
         return user
 
     def create_superuser(self, USER_ID, USERNAME, EMAIL, password=None, **extra_fields):
+        if not EMAIL:
+            raise ValueError('EMAIL is required')
+        if not USERNAME:
+            raise ValueValueError('USERNAME is required')
+        if not USER_ID:
+            raise ValueError('USER_ID is required')
+            
         extra_fields.setdefault('IS_STAFF', True)
         extra_fields.setdefault('IS_SUPERUSER', True)
         extra_fields.setdefault('IS_ACTIVE', True)
-        extra_fields.setdefault('IS_EMAIL_VERIFIED', True)
-        extra_fields.setdefault('FAILED_LOGIN_ATTEMPTS', 0)
-        extra_fields.setdefault('IS_LOCKED', False)
-        extra_fields.setdefault('OTP_ATTEMPTS', 0)
-        extra_fields.setdefault('OTP_VERIFIED', False)
-        extra_fields.setdefault('MAX_OTP_TRY', 3)
-
-        # Remove DESIGNATION from required fields for createsuperuser command
-        if self.model.REQUIRED_FIELDS and 'DESIGNATION' in self.model.REQUIRED_FIELDS:
-            self.model.REQUIRED_FIELDS.remove('DESIGNATION')
-
-        # Get or create superadmin designation
-        from django.db import transaction
-        with transaction.atomic():
-            try:
-                designation = DESIGNATION.objects.get(CODE='SUPERADMIN')
-            except DESIGNATION.DoesNotExist:
-                designation = DESIGNATION.objects.create(
-                    NAME='Super Admin',
-                    CODE='SUPERADMIN',
-                    DESCRIPTION='Full system access',
-                    PERMISSIONS={'all_modules': {'read': True, 'create': True, 'update': True, 'delete': True}},
-                    IS_ACTIVE=True
-                )
-            
-            extra_fields['DESIGNATION'] = designation
-            
-            return self.create_user(USER_ID, USERNAME, EMAIL, password, **extra_fields)
+        
+        user = self.model(
+            USER_ID=USER_ID,
+            USERNAME=USERNAME,
+            EMAIL=self.normalize_email(EMAIL),
+            **extra_fields
+        )
+        user.set_password(password)
+        user.save(using=self._db)
+        return user
 
     def make_random_password(self, length=10, 
                            allowed_chars='abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'):
@@ -90,18 +67,6 @@ class CustomUserManager(models.Manager):
         Generate a random password with the given length and allowed characters.
         """
         return ''.join(random.choice(allowed_chars) for i in range(length))
-
-class DESIGNATION_HISTORY(BaseHistoryModel):
-    DESIGNATION = models.ForeignKey('DESIGNATION', on_delete=models.CASCADE, db_column='DESIGNATION_ID')
-
-    class Meta:
-        db_table = 'DESIGNATIONS_HISTORY'
-
-class USER_HISTORY(BaseHistoryModel):
-    USER = models.ForeignKey('CustomUser', on_delete=models.CASCADE, db_column='USER_ID', related_name='history_records')
-
-    class Meta:
-        db_table = 'USERS_HISTORY'
 
 class DESIGNATION(AuditModel):
     DESIGNATION_ID = models.AutoField(primary_key=True, db_column='DESIGNATION_ID')
@@ -116,6 +81,8 @@ class DESIGNATION(AuditModel):
     IS_ACTIVE = models.BooleanField(default=True, db_column='IS_ACTIVE')
     CREATED_AT = models.DateTimeField(auto_now_add=True, db_column='CREATED_AT')
     UPDATED_AT = models.DateTimeField(auto_now=True, db_column='UPDATED_AT')
+    CREATED_BY = models.CharField(max_length=50, db_column='CREATED_BY', default='system')
+    UPDATED_BY = models.CharField(max_length=50, db_column='UPDATED_BY', default='system')
 
     class Meta:
         db_table = 'DESIGNATIONS'
@@ -124,52 +91,6 @@ class DESIGNATION(AuditModel):
 
     def __str__(self):
         return f"{self.DESIGNATION_ID} - {self.NAME}"
-
-    def save(self, *args, **kwargs):
-        action = 'INSERT' if not self.pk else 'UPDATE'
-        old_data = None
-        if self.pk:
-            old_instance = DESIGNATION.objects.get(pk=self.pk)
-            old_data = {
-                'NAME': old_instance.NAME,
-                'CODE': old_instance.CODE,
-                'DESCRIPTION': old_instance.DESCRIPTION,
-                'PERMISSIONS': old_instance.PERMISSIONS,
-                'IS_ACTIVE': old_instance.IS_ACTIVE
-            }
-        
-        super().save(*args, **kwargs)
-        
-        new_data = {
-            'NAME': self.NAME,
-            'CODE': self.CODE,
-            'DESCRIPTION': self.DESCRIPTION,
-            'PERMISSIONS': self.PERMISSIONS,
-            'IS_ACTIVE': self.IS_ACTIVE
-        }
-        
-        DESIGNATION_HISTORY.objects.create(
-            DESIGNATION=self,
-            ACTION=action,
-            ACTION_BY=self.UPDATED_BY,
-            OLD_DATA=old_data,
-            NEW_DATA=new_data
-        )
-
-    def delete(self, *args, **kwargs):
-        DESIGNATION_HISTORY.objects.create(
-            DESIGNATION=self,
-            ACTION='DELETE',
-            ACTION_BY=self.DELETED_BY or self.UPDATED_BY,
-            OLD_DATA={
-                'NAME': self.NAME,
-                'CODE': self.CODE,
-                'DESCRIPTION': self.DESCRIPTION,
-                'PERMISSIONS': self.PERMISSIONS,
-                'IS_ACTIVE': self.IS_ACTIVE
-            }
-        )
-        super().delete(*args, **kwargs)
 
 class PASSWORD_HISTORY(models.Model):
     PASSWORD_HISTORY_ID = models.AutoField(primary_key=True, db_column='PASSWORD_HISTORY_ID')
@@ -280,7 +201,7 @@ class CustomUser(AbstractUser):
     objects = CustomUserManager()
 
     class Meta:
-        db_table = 'USERS'
+        db_table = '"ADMIN"."USERS"'  # Not just 'USERS'
         verbose_name = 'User'
         verbose_name_plural = 'Users'
         ordering = ['USER_ID']
@@ -352,12 +273,17 @@ class CustomUser(AbstractUser):
         if not raw_password:
             return
 
+        # Only check password history if user already exists
         if self.pk and not self.check_password_history(raw_password):
             raise ValueError("Cannot reuse any of your last 5 passwords")
 
         self.PASSWORD = make_password(raw_password)
+        self.PASSWORD_CHANGED_AT = timezone.now()
         
-        if self.pk:
+        # Don't save or create password history during initial user creation
+        if not self._state.adding:  # Only if this is an update, not a new user
+            self.save()
+            
             PASSWORD_HISTORY.objects.create(
                 USER=self,
                 PASSWORD=self.PASSWORD
@@ -367,9 +293,6 @@ class CustomUser(AbstractUser):
             old_passwords = self.password_history.all()[5:]
             for old_password in old_passwords:
                 old_password.delete()
-
-        self.PASSWORD_CHANGED_AT = timezone.now()
-        self.save()
 
     def check_password(self, raw_password):
         return check_password(raw_password, self.PASSWORD)
@@ -467,31 +390,47 @@ class CustomUser(AbstractUser):
         return False, "Account is not locked."
 
     def update_login_info(self, ip_address):
+        """Update login audit information"""
+        current_time = timezone.now()
+        update_fields = [
+            'LAST_LOGIN_IP',
+            'LAST_LOGIN',
+            'LAST_LOGIN_ATTEMPT',
+            'FAILED_LOGIN_ATTEMPTS',
+            'IS_LOCKED',
+            'LOCKED_UNTIL'
+        ]
+        
         self.LAST_LOGIN_IP = ip_address
-        self.last_login = timezone.now()
+        self.LAST_LOGIN = current_time
+        self.LAST_LOGIN_ATTEMPT = current_time
         self.FAILED_LOGIN_ATTEMPTS = 0
         self.IS_LOCKED = False
         self.LOCKED_UNTIL = None
-        self.save()
+        
+        self.save(update_fields=update_fields)
 
     def generate_otp(self):
         try:
             otp = ''.join(secrets.choice(string.digits) for _ in range(6))
-            expiry = timezone.now() + timezone.timedelta(minutes=3)
+            current_time = timezone.now()
+            expiry = current_time + timezone.timedelta(minutes=3)
             
-            # Update both fields together
-            CustomUser.objects.filter(pk=self.pk).update(
-                OTP_SECRET=otp,
-                OTP_EXPIRY=expiry,
-                OTP_CREATED_AT=timezone.now(),  # Add this
-                OTP_ATTEMPTS=0  # Reset attempts
-            )
+            update_fields = {
+                'OTP_SECRET': otp,
+                'OTP_EXPIRY': expiry,
+                'OTP_CREATED_AT': current_time,
+                'OTP_ATTEMPTS': 0,
+                'OTP_VERIFIED': False,
+                'OTP_BLOCKED_UNTIL': None  # Reset blocking when new OTP generated
+            }
+            
+            # Update all fields atomically
+            CustomUser.objects.filter(pk=self.pk).update(**update_fields)
             
             # Update instance attributes
-            self.OTP_SECRET = otp
-            self.OTP_EXPIRY = expiry
-            self.OTP_CREATED_AT = timezone.now()
-            self.OTP_ATTEMPTS = 0
+            for field, value in update_fields.items():
+                setattr(self, field, value)
             
             return otp
         except Exception as e:
@@ -499,38 +438,52 @@ class CustomUser(AbstractUser):
             return None
 
     def verify_otp(self, otp, clear_on_success=False):
-        print(f"Verifying OTP for user {self.USER_ID}")
-        print(f"Input OTP: {otp}")
-        print(f"Stored OTP: {self.OTP_SECRET}")
-        print(f"OTP Expiry: {self.OTP_EXPIRY}")
-        print(f"Current time: {timezone.now()}")
-        
         try:
+            current_time = timezone.now()
+
+            # Check if OTP is blocked
+            if self.OTP_BLOCKED_UNTIL and current_time < self.OTP_BLOCKED_UNTIL:
+                block_remaining = self.OTP_BLOCKED_UNTIL - current_time
+                minutes = int(block_remaining.total_seconds() // 60)
+                return False, f"OTP verification blocked for {minutes} minutes"
+
             if not self.OTP_SECRET or not self.OTP_EXPIRY:
                 return False, "No valid OTP found"
 
-            if timezone.now() > self.OTP_EXPIRY:
+            if current_time > self.OTP_EXPIRY:
                 self.OTP_SECRET = None
                 self.OTP_EXPIRY = None
-                self.save()
+                self.save(update_fields=['OTP_SECRET', 'OTP_EXPIRY'])
                 return False, "OTP has expired"
 
             if self.OTP_ATTEMPTS >= self.MAX_OTP_TRY:
-                return False, "Too many attempts. Please request a new OTP"
+                # Block OTP verification for 15 minutes
+                self.OTP_BLOCKED_UNTIL = current_time + timezone.timedelta(minutes=15)
+                self.save(update_fields=['OTP_BLOCKED_UNTIL'])
+                return False, "Too many attempts. Try again after 15 minutes"
 
             if otp != self.OTP_SECRET:
                 self.OTP_ATTEMPTS += 1
-                self.save()
-                return False, "Invalid OTP"
+                self.save(update_fields=['OTP_ATTEMPTS'])
+                remaining = self.MAX_OTP_TRY - self.OTP_ATTEMPTS
+                return False, f"Invalid OTP. {remaining} attempts remaining"
 
-            # Only clear OTP if clear_on_success is True
-            if clear_on_success:
-                self.OTP_SECRET = None
-                self.OTP_EXPIRY = None
+            # Success case
+            update_fields = {
+                'OTP_VERIFIED': True,
+                'OTP_ATTEMPTS': 0
+            }
             
-            self.OTP_VERIFIED = True
-            self.OTP_ATTEMPTS = 0
-            self.save()
+            if clear_on_success:
+                update_fields.update({
+                    'OTP_SECRET': None,
+                    'OTP_EXPIRY': None
+                })
+
+            # Update all fields
+            for field, value in update_fields.items():
+                setattr(self, field, value)
+            self.save(update_fields=list(update_fields.keys()))
             
             return True, "OTP verified successfully"
             
@@ -557,33 +510,285 @@ class CustomUser(AbstractUser):
     def save(self, *args, **kwargs):
         if self.pk:  # If this is an update
             try:
-                # Get the old instance if it exists
                 old_instance = self.__class__.objects.filter(pk=self.pk).first()
                 if old_instance:
-                    # Fix: Use FAILED_LOGIN_ATTEMPTS instead of FAILED_ATTEMPTS
-                    self.FAILED_LOGIN_ATTEMPTS = old_instance.FAILED_LOGIN_ATTEMPTS
-                    self.LAST_LOGIN_ATTEMPT = old_instance.LAST_LOGIN_ATTEMPT
+                    # Store all audit fields
+                    audit_fields = [
+                        'LAST_LOGIN_ATTEMPT',
+                        'LAST_FAILED_LOGIN',
+                        'LAST_LOGIN_IP',
+                        'FAILED_LOGIN_ATTEMPTS',
+                        'IS_LOCKED',
+                        'LOCKED_UNTIL',
+                        'PERMANENT_LOCK',
+                        'LOCK_REASON',
+                        'OTP_BLOCKED_UNTIL'
+                    ]
+                    # Preserve existing audit field values
+                    for field in audit_fields:
+                        current_value = getattr(self, field, None)
+                        if current_value is None:
+                            setattr(self, field, getattr(old_instance, field, None))
             except self.__class__.DoesNotExist:
-                pass  # This is a new instance
-        
+                pass
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
-        USER_HISTORY.objects.create(
-            USER=self,
-            ACTION='DELETE',
-            ACTION_BY=self.DELETED_BY or self.UPDATED_BY,
-            OLD_DATA={
-                'USERNAME': self.USERNAME,
-                'EMAIL': self.EMAIL,
-                'FIRST_NAME': self.FIRST_NAME,
-                'LAST_NAME': self.LAST_NAME,
-                'DESIGNATION_ID': str(self.DESIGNATION.DESIGNATION_ID),
-                'IS_ACTIVE': self.IS_ACTIVE,
-                'IS_STAFF': self.IS_STAFF,
-                'IS_SUPERUSER': self.IS_SUPERUSER,
-                'IS_EMAIL_VERIFIED': self.IS_EMAIL_VERIFIED
-            }
-        )
         super().delete(*args, **kwargs)
 
+class UNIVERSITY(AuditModel):
+    UNIVERSITY_ID = models.AutoField(primary_key=True, db_column='UNIVERSITY_ID')
+    NAME = models.CharField(max_length=255, db_column='NAME')
+    CODE = models.CharField(max_length=50, unique=True, db_column='CODE')
+    ADDRESS = models.TextField(db_column='ADDRESS')
+    CONTACT_NUMBER = models.CharField(max_length=15, db_column='CONTACT_NUMBER')
+    EMAIL = models.EmailField(unique=True, db_column='EMAIL')
+    WEBSITE = models.URLField(null=True, blank=True, db_column='WEBSITE')
+    ESTD_YEAR = models.IntegerField(db_column='ESTD_YEAR')
+    IS_ACTIVE = models.BooleanField(default=True, db_column='IS_ACTIVE')
+    CREATED_BY = models.CharField(max_length=50, db_column='CREATED_BY', default='system')
+    UPDATED_BY = models.CharField(max_length=50, db_column='UPDATED_BY', default='system')
+
+    class Meta:
+        db_table = 'UNIVERSITIES'
+        verbose_name = 'University'
+        verbose_name_plural = 'Universities'
+
+    def __str__(self):
+        return f"{self.CODE} - {self.NAME}"
+
+class INSTITUTE(AuditModel):
+    INSTITUTE_ID = models.AutoField(primary_key=True, db_column='INSTITUTE_ID')
+    UNIVERSITY = models.ForeignKey(
+        UNIVERSITY,
+        on_delete=models.PROTECT,
+        db_column='UNIVERSITY_ID',
+        related_name='institutes'
+    )
+    NAME = models.CharField(max_length=255, db_column='NAME')
+    CODE = models.CharField(max_length=50, unique=True, db_column='CODE')
+    ADDRESS = models.TextField(db_column='ADDRESS')
+    CONTACT_NUMBER = models.CharField(max_length=15, db_column='CONTACT_NUMBER')
+    EMAIL = models.EmailField(unique=True, db_column='EMAIL')
+    WEBSITE = models.URLField(null=True, blank=True, db_column='WEBSITE')
+    ESTD_YEAR = models.IntegerField(db_column='ESTD_YEAR')
+    IS_ACTIVE = models.BooleanField(default=True, db_column='IS_ACTIVE')
+    CREATED_BY = models.CharField(max_length=50, db_column='CREATED_BY', default='system')
+    UPDATED_BY = models.CharField(max_length=50, db_column='UPDATED_BY', default='system')
+
+    class Meta:
+        db_table = 'INSTITUTES'
+        verbose_name = 'Institute'
+        verbose_name_plural = 'Institutes'
+
+    def __str__(self):
+        return f"{self.CODE} - {self.NAME}"
+
+class PROGRAM(AuditModel):
+    PROGRAM_ID = models.AutoField(primary_key=True, db_column='PROGRAM_ID')
+    INSTITUTE = models.ForeignKey(
+        INSTITUTE,
+        on_delete=models.PROTECT,
+        db_column='INSTITUTE_ID',
+        related_name='programs'
+    )
+    NAME = models.CharField(max_length=255, db_column='NAME')
+    CODE = models.CharField(max_length=20, unique=True, db_column='CODE')
+    DURATION_YEARS = models.IntegerField(db_column='DURATION_YEARS')
+    LEVEL = models.CharField(
+        max_length=10,
+        choices=[
+            ('UG', 'Undergraduate'),
+            ('PG', 'Postgraduate'),
+            ('DIP', 'Diploma')
+        ],
+        db_column='LEVEL'
+    )
+    TYPE = models.CharField(
+        max_length=2,
+        choices=[
+            ('FT', 'Full Time'),
+            ('PT', 'Part Time')
+        ],
+        db_column='TYPE'
+    )
+    DESCRIPTION = models.TextField(
+        db_column='DESCRIPTION',
+        null=True,
+        blank=True,
+        default=""
+    )
+    IS_ACTIVE = models.BooleanField(default=True, db_column='IS_ACTIVE')
+    CREATED_BY = models.CharField(max_length=50, db_column='CREATED_BY', default='system')
+    UPDATED_BY = models.CharField(max_length=50, db_column='UPDATED_BY', default='system')
+
+    class Meta:
+        db_table = 'PROGRAMS'
+        verbose_name = 'Program'
+        verbose_name_plural = 'Programs'
+
+    def __str__(self):
+        return f"{self.CODE} - {self.NAME}"
+    
+class DEPARTMENT(AuditModel):
+    DEPARTMENT_ID = models.AutoField(primary_key=True, db_column='DEPARTMENT_ID')
+    NAME = models.CharField(max_length=255, db_column='NAME')
+    CODE = models.CharField(max_length=20, unique=True, db_column='CODE')
+    IS_ACTIVE = models.BooleanField(default=True, db_column='IS_ACTIVE')
+    
+    class Meta:
+        db_table = 'DEPARTMENTS'
+        verbose_name = 'Department'
+        verbose_name_plural = 'Departments'
+
+    def __str__(self):
+        return f"{self.CODE} - {self.NAME}"
+
+class BRANCH(AuditModel):
+    BRANCH_ID = models.AutoField(primary_key=True, db_column='BRANCH_ID')
+    PROGRAM = models.ForeignKey(
+        PROGRAM,
+        on_delete=models.PROTECT,
+        db_column='PROGRAM_ID',
+        related_name='branches'
+    )
+    NAME = models.CharField(max_length=255, db_column='NAME')
+    CODE = models.CharField(max_length=20, unique=True, db_column='CODE')
+    DESCRIPTION = models.TextField(
+        db_column='DESCRIPTION',
+        null=True,
+        blank=True,
+        default=""
+    )
+    IS_ACTIVE = models.BooleanField(default=True, db_column='IS_ACTIVE')
+    CREATED_BY = models.CharField(max_length=50, db_column='CREATED_BY', default='system')
+    UPDATED_BY = models.CharField(max_length=50, db_column='UPDATED_BY', default='system')
+
+    class Meta:
+        db_table = 'BRANCHES'
+        verbose_name = 'Branch'
+        verbose_name_plural = 'Branches'
+
+    def __str__(self):
+        return f"{self.CODE} - {self.NAME}"
+
+class COUNTRY(AuditModel):
+    COUNTRY_ID = models.AutoField(primary_key=True, db_column='COUNTRY_ID')
+    NAME = models.CharField(max_length=100, db_column='NAME')
+    CODE = models.CharField(max_length=3, unique=True, db_column='CODE')
+    PHONE_CODE = models.CharField(max_length=5, db_column='PHONE_CODE')
+    IS_ACTIVE = models.BooleanField(default=True, db_column='IS_ACTIVE')
+    CREATED_BY = models.CharField(max_length=50, db_column='CREATED_BY', null=True)  # Changed
+    UPDATED_BY = models.CharField(max_length=50, db_column='UPDATED_BY', null=True)  # Changed
+
+    class Meta:
+        db_table = 'COUNTRIES'
+        verbose_name = 'Country'
+        verbose_name_plural = 'Countries'
+
+    def __str__(self):
+        return f"{self.CODE} - {self.NAME}"
+
+class STATE(AuditModel):
+    STATE_ID = models.AutoField(primary_key=True, db_column='STATE_ID')
+    COUNTRY = models.ForeignKey(
+        COUNTRY,
+        on_delete=models.PROTECT,
+        db_column='COUNTRY_ID',
+        related_name='states'
+    )
+    NAME = models.CharField(max_length=100, db_column='NAME')
+    CODE = models.CharField(max_length=3, db_column='CODE')
+    IS_ACTIVE = models.BooleanField(default=True, db_column='IS_ACTIVE')
+    CREATED_BY = models.CharField(max_length=50, db_column='CREATED_BY', null=True)  # Changed
+    UPDATED_BY = models.CharField(max_length=50, db_column='UPDATED_BY', null=True)  # Changed
+    CREATED_AT = models.DateTimeField(auto_now_add=True, db_column='CREATED_AT')
+    UPDATED_AT = models.DateTimeField(auto_now=True, db_column='UPDATED_AT')
+
+    class Meta:
+        db_table = 'STATES'
+        verbose_name = 'State'
+        verbose_name_plural = 'States'
+        unique_together = ('COUNTRY', 'CODE')
+
+    def __str__(self):
+        return f"{self.CODE} - {self.NAME}"
+
+class CITY(AuditModel):
+    CITY_ID = models.AutoField(primary_key=True, db_column='CITY_ID')
+    STATE = models.ForeignKey(
+        STATE,
+        on_delete=models.PROTECT,
+        db_column='STATE_ID',
+        related_name='cities'
+    )
+    NAME = models.CharField(max_length=100, db_column='NAME')
+    CODE = models.CharField(max_length=5, db_column='CODE')
+    IS_ACTIVE = models.BooleanField(default=True, db_column='IS_ACTIVE')
+    CREATED_BY = models.CharField(max_length=50, db_column='CREATED_BY', default='system')
+    UPDATED_BY = models.CharField(max_length=50, db_column='UPDATED_BY', default='system')
+
+    class Meta:
+        db_table = 'CITIES'
+        verbose_name = 'City'
+        verbose_name_plural = 'Cities'
+        unique_together = ('STATE', 'CODE')
+
+    def __str__(self):
+        return f"{self.CODE} - {self.NAME}"
+
+class CURRENCY(AuditModel):
+    CURRENCY_ID = models.AutoField(primary_key=True, db_column='CURRENCY_ID')
+    NAME = models.CharField(max_length=50, db_column='NAME')
+    CODE = models.CharField(max_length=3, unique=True, db_column='CODE')
+    SYMBOL = models.CharField(max_length=5, db_column='SYMBOL')
+    IS_ACTIVE = models.BooleanField(default=True, db_column='IS_ACTIVE')
+    CREATED_BY = models.CharField(max_length=50, db_column='CREATED_BY', default='system')
+    UPDATED_BY = models.CharField(max_length=50, db_column='UPDATED_BY', default='system')
+
+    class Meta:
+        db_table = 'CURRENCIES'
+        verbose_name = 'Currency'
+        verbose_name_plural = 'Currencies'
+
+    def __str__(self):
+        return f"{self.CODE} ({self.SYMBOL})"
+
+class LANGUAGE(AuditModel):
+    LANGUAGE_ID = models.AutoField(primary_key=True, db_column='LANGUAGE_ID')
+    NAME = models.CharField(max_length=50, db_column='NAME')
+    CODE = models.CharField(max_length=5, unique=True, db_column='CODE')
+    IS_ACTIVE = models.BooleanField(default=True, db_column='IS_ACTIVE')
+    CREATED_BY = models.CharField(max_length=50, db_column='CREATED_BY', default='system')
+    UPDATED_BY = models.CharField(max_length=50, db_column='UPDATED_BY', default='system')
+
+    class Meta:
+        db_table = 'LANGUAGES'
+        verbose_name = 'Language'
+        verbose_name_plural = 'Languages'
+
+    def __str__(self):
+        return f"{self.CODE} - {self.NAME}"
+
+class CATEGORY(AuditModel):
+    CATEGORY_ID = models.AutoField(primary_key=True, db_column='CATEGORY_ID')
+    NAME = models.CharField(max_length=50, db_column='NAME')
+    CODE = models.CharField(max_length=10, unique=True, db_column='CODE')
+    DESCRIPTION = models.TextField(null=True, blank=True, db_column='DESCRIPTION')
+    RESERVATION_PERCENTAGE = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0.00,
+        db_column='RESERVATION_PERCENTAGE'
+    )
+    IS_ACTIVE = models.BooleanField(default=True, db_column='IS_ACTIVE')
+    CREATED_BY = models.CharField(max_length=50, db_column='CREATED_BY', default='system')
+    UPDATED_BY = models.CharField(max_length=50, db_column='UPDATED_BY', default='system')
+
+    class Meta:
+        db_table = 'CATEGORIES'
+        verbose_name = 'Category'
+        verbose_name_plural = 'Categories'
+
+    def __str__(self):
+        return f"{self.CODE} - {self.NAME}"

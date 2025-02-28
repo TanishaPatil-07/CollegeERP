@@ -1,141 +1,191 @@
 import React, { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
+import MasterTableList from "../master/MasterTableList";
+import { useTheme as useMUITheme } from "@mui/material/styles";
 
-interface MenuItem {
-  title: string;
-  path: string;
-  icon: string;
-  submenu?: MenuItem[];
+interface SidebarProps {
+  isOpen: boolean;
+  setIsOpen: (isOpen: boolean) => void;
 }
 
-const menuItems: MenuItem[] = [
-  {
-    title: "Dashboard",
-    path: "/dashboard",
-    icon: "📊",
-  },
-  {
-    title: "Academic",
-    path: "/academic",
-    icon: "🎓",
-    submenu: [
-      { title: "Programs", path: "/academic/programs", icon: "📚" },
-      { title: "Courses", path: "/academic/courses", icon: "📖" },
-      { title: "Schedule", path: "/academic/schedule", icon: "📅" },
-    ],
-  },
-  {
-    title: "Students",
-    path: "/students",
-    icon: "👨‍🎓",
-    submenu: [
-      { title: "All Students", path: "/students/all", icon: "👥" },
-      { title: "Admissions", path: "/students/admissions", icon: "📝" },
-      { title: "Attendance", path: "/students/attendance", icon: "✅" },
-    ],
-  },
-  {
-    title: "Faculty",
-    path: "/faculty",
-    icon: "👨‍🏫",
-    submenu: [
-      { title: "All Faculty", path: "/faculty/all", icon: "👥" },
-      { title: "Departments", path: "/faculty/departments", icon: "🏢" },
-    ],
-  },
-  {
-    title: "Examination",
-    path: "/examination",
-    icon: "📝",
-    submenu: [
-      { title: "Exam Schedule", path: "/examination/schedule", icon: "📅" },
-      { title: "Results", path: "/examination/results", icon: "📊" },
-    ],
-  },
-  {
-    title: "Finance",
-    path: "/finance",
-    icon: "💰",
-    submenu: [
-      { title: "Fees", path: "/finance/fees", icon: "💵" },
-      { title: "Payments", path: "/finance/payments", icon: "💳" },
-    ],
-  },
-];
-
-const Sidebar = () => {
-  const [openMenus, setOpenMenus] = useState<string[]>([]);
+const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
   const location = useLocation();
+  const theme = useMUITheme();
+  const [expandedMenus, setExpandedMenus] = useState<string[]>([]);
 
-  const toggleSubmenu = (path: string) => {
-    setOpenMenus((prev) =>
-      prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path]
+  const menuItems = [
+    { icon: "bi-speedometer2", text: "Dashboard", path: "/dashboard/home" },
+    {
+      icon: "bi-gear-fill",
+      text: "Administration",
+      children: [
+        {
+          icon: "bi-database-fill",
+          text: "Master",
+          children: [
+            {
+              icon: "bi-database-fill",
+              text: "Master Entry",
+              path: "/dashboard/master",
+              exact: true,
+            },
+            {
+              icon: "bi-people-fill",
+              text: "Employee Type",
+              path: "/dashboard/employee",
+              exact: true,
+            },
+            {
+              icon: "bi-people-fill",
+              text: "Course Master",
+              path: "/dashboard/coursemaster",
+              exact: true,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      icon: "bi-building",
+      text: "University",
+      path: "/dashboard/master/university",
+      exact: true,
+    },
+    {
+      icon: "bi-mortarboard",
+      text: "Institute",
+      path: "/dashboard/master/institute",
+      exact: true,
+    },
+    {
+      icon: "bi-gear-fill",
+      text: "System Settings",
+      path: "/dashboard/settings",
+    },
+    {
+      icon: "bi-building",
+      text: "Institutions",
+      path: "/dashboard/institutions",
+    },
+    { icon: "bi-shield-lock", text: "Roles & Permissions", path: "/roles" },
+    { icon: "bi-sliders", text: "Configuration", path: "/config" },
+    { icon: "bi-person-lines-fill", text: "User Management", path: "/users" },
+    { icon: "bi-clock-history", text: "Audit Logs", path: "/audit" },
+  ];
+
+  const toggleSubmenu = (text: string) => {
+    setExpandedMenus((prev) =>
+      prev.includes(text)
+        ? prev.filter((item) => item !== text)
+        : [...prev, text]
     );
   };
 
-  const isActive = (path: string) => location.pathname === path;
-  const isSubmenuOpen = (path: string) => openMenus.includes(path);
+  const renderMenuItem = (item: any, level = 0) => {
+    const hasChildren = item.children && item.children.length > 0;
+    const isExpanded = expandedMenus.includes(item.text);
 
-  return (
-    <div className="bg-gray-800 text-white w-64 min-h-screen px-4 py-6">
-      <div className="flex items-center mb-8 px-2">
-        <img src="/logo.svg" alt="Synchronik ERP" className="h-8 w-8 mr-2" />
-        <span className="text-xl font-bold">Synchronik ERP</span>
-      </div>
-
-      <nav>
-        {menuItems.map((item) => (
-          <div key={item.path} className="mb-2">
-            <button
-              onClick={() => item.submenu && toggleSubmenu(item.path)}
-              className={`w-full flex items-center justify-between px-2 py-2 rounded-md transition-colors ${
-                isActive(item.path) ? "bg-blue-600" : "hover:bg-gray-700"
-              }`}
-            >
-              <div className="flex items-center">
-                <span className="mr-2">{item.icon}</span>
-                <span>{item.title}</span>
-              </div>
-              {item.submenu && (
-                <svg
-                  className={`w-4 h-4 transition-transform ${
-                    isSubmenuOpen(item.path) ? "transform rotate-180" : ""
-                  }`}
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M19 9l-7 7-7-7"
-                  />
-                </svg>
-              )}
-            </button>
-
-            {item.submenu && isSubmenuOpen(item.path) && (
-              <div className="ml-4 mt-2 space-y-1">
-                {item.submenu.map((subItem) => (
-                  <Link
-                    key={subItem.path}
-                    to={subItem.path}
-                    className={`flex items-center px-2 py-2 rounded-md transition-colors ${
-                      isActive(subItem.path)
-                        ? "bg-blue-600"
-                        : "hover:bg-gray-700"
-                    }`}
-                  >
-                    <span className="mr-2">{subItem.icon}</span>
-                    <span>{subItem.title}</span>
-                  </Link>
-                ))}
-              </div>
+    return (
+      <div key={item.text} style={{ marginLeft: level * 15 }}>
+        {item.path ? (
+          <Link
+            to={item.path}
+            className={`
+              d-flex align-items-center text-decoration-none p-2 mb-1 rounded
+              ${isActive(item.path, item.exact) ? "bg-primary text-white" : ""}
+              hover-effect
+            `}
+            style={{
+              color: isActive(item.path, item.exact)
+                ? theme.palette.primary.contrastText
+                : theme.palette.text.secondary,
+              backgroundColor: isActive(item.path, item.exact)
+                ? theme.palette.primary.main
+                : "transparent",
+              transition: "all 0.3s",
+            }}
+            title={!isOpen ? item.text : ""}
+          >
+            <i className={`${item.icon} ${isOpen ? "me-2" : ""}`}></i>
+            {isOpen && <span className="small">{item.text}</span>}
+          </Link>
+        ) : (
+          <div
+            className="d-flex align-items-center p-2 mb-1 rounded cursor-pointer hover-effect"
+            onClick={() => toggleSubmenu(item.text)}
+            style={{
+              color: theme.palette.text.secondary,
+              transition: "all 0.3s",
+              cursor: "pointer",
+            }}
+          >
+            <i className={`${item.icon} ${isOpen ? "me-2" : ""}`}></i>
+            {isOpen && (
+              <>
+                <span className="small">{item.text}</span>
+                <i
+                  className={`bi bi-chevron-${
+                    isExpanded ? "down" : "right"
+                  } ms-auto`}
+                ></i>
+              </>
             )}
           </div>
-        ))}
-      </nav>
+        )}
+        {hasChildren && isExpanded && isOpen && (
+          <div className="submenu-container">
+            {item.children.map((child: any) =>
+              renderMenuItem(child, level + 1)
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Update isActive to check for exact matches
+  const isActive = (path: string, exact?: boolean) => {
+    if (exact) {
+      return location.pathname === path;
+    }
+    return location.pathname.startsWith(path);
+  };
+
+  return (
+    <div
+      className={`border-end transition-width`}
+      style={{
+        width: isOpen ? "250px" : "50px",
+        backgroundColor: theme.palette.background.paper,
+        borderColor: theme.palette.divider,
+      }}
+    >
+      {/* Sidebar Header */}
+      <div
+        className="p-3 border-bottom d-flex align-items-center"
+        style={{
+          backgroundColor: theme.palette.background.paper,
+          borderColor: theme.palette.divider,
+        }}
+      >
+        <button
+          className="btn btn-link p-0 me-2 text-primary"
+          onClick={() => setIsOpen(!isOpen)}
+        >
+          <i
+            className={`bi ${isOpen ? "bi-chevron-left" : "bi-chevron-right"}`}
+          ></i>
+        </button>
+        {isOpen && (
+          <h5 className="mb-0 text-primary d-flex align-items-center">
+            <i className="bi bi-grid-fill me-2"></i>
+            Admin Portal
+          </h5>
+        )}
+      </div>
+
+      {/* Sidebar Menu */}
+      <div className="p-2">{menuItems.map((item) => renderMenuItem(item))}</div>
     </div>
   );
 };
